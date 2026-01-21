@@ -80,6 +80,12 @@ tcloud-mcp-platform/
   - Email: admin@example.com
   - Password: `kubectl -n mcp-dev get secret mcp-stack-gateway-secret -o jsonpath="{.data.BASIC_AUTH_PASSWORD}" | base64 -d`
 
+## Registered Agents
+
+| Agent | URL | Status |
+|-------|-----|--------|
+| tcloud-watch-mcp-server | https://api.tcloud-watch-mcp.example.com/mcp | ✅ Registrado |
+
 ## Related Repositories
 
 - [tcloud-watch-mcp-server](https://github.com/tcloud-dev/tcloud-watch-mcp-server) - CPU/RAM Agent
