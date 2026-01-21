@@ -1,14 +1,10 @@
 # MCP Context Forge - Base Configuration
-# This file contains common settings for all environments
-# Environment-specific overrides go in values-dev.yaml or values-prod.yaml
-#
 # Chart: https://github.com/IBM/mcp-context-forge
 
-# Gateway Configuration
 mcpContextForge:
   env:
     postgres:
-      db: mcpforge  # Must match postgres.credentials.database
+      db: mcpforge
   replicaCount: 2
 
   image:
@@ -53,7 +49,6 @@ mcpContextForge:
     BASIC_AUTH_USER: admin
     AUTH_REQUIRED: "true"
 
-# PostgreSQL Configuration
 postgres:
   enabled: true
   persistence:
@@ -64,7 +59,6 @@ postgres:
     database: mcpforge
     user: mcpforge
 
-# Redis Configuration
 redis:
   enabled: true
   persistence:
@@ -72,7 +66,6 @@ redis:
     storageClassName: "default-persistence"
     size: 5Gi
 
-# Disable optional components by default
 pgadmin:
   enabled: false
 

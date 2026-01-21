@@ -1,54 +1,44 @@
 # MCP Context Forge - Development Environment
 # Cluster: tbf8b9d (K8s v1.31.6)
 # Namespace: mcp-dev
-# Access: NodePort (use kubectl port-forward or create separate NodePort service)
 
-# Gateway - single replica for dev
 mcpContextForge:
   env:
     postgres:
-      db: mcpforge  # Must match postgres.credentials.database
+      db: mcpforge
   replicaCount: 1
 
   image:
-    pullPolicy: Always  # Always pull latest in dev
+    pullPolicy: Always
 
   service:
     type: NodePort
     port: 80
-    # nodePort is set via kubectl patch (chart doesn't support it)
 
   hpa:
-    enabled: false  # No autoscaling in dev
+    enabled: false
 
   ingress:
     enabled: true
-    # className omitted - use default public ingress (.223)
-    # Note: Helm chart requires className, so we patch it out after deploy
-    className: "nginx"
+    className: "nginx"  # Patched out after deploy to use public ingress
     host: mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh
     path: /
     pathType: Prefix
     tls:
-      enabled: false  # Cluster handles TLS automatically
+      enabled: false
 
   config:
     LOG_LEVEL: DEBUG
-    GUNICORN_WORKERS: "2"  # Reduce workers to avoid OOM (default is 16)
+    GUNICORN_WORKERS: "2"
 
   resources:
     requests:
       memory: "512Mi"
       cpu: "100m"
     limits:
-      memory: "2Gi"  # Increase memory limit
+      memory: "2Gi"
       cpu: "1000m"
 
-  # Secrets - set via --set for security
-  # --set mcpContextForge.secret.BASIC_AUTH_PASSWORD=<senha>
-  # --set mcpContextForge.secret.JWT_SECRET_KEY=<secret>
-
-# PostgreSQL - smaller for dev
 postgres:
   persistence:
     enabled: true
@@ -57,16 +47,13 @@ postgres:
   credentials:
     database: mcpforge
     user: mcpforge
-    # password set via --set postgres.credentials.password=<senha>
 
-# Redis - smaller for dev, with persistence
 redis:
   persistence:
     enabled: true
     storageClassName: "default-persistence"
     size: 1Gi
 
-# Disable all optional components in dev
 pgadmin:
   enabled: false
 
