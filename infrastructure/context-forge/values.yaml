@@ -1,0 +1,101 @@
+# MCP Context Forge - Base Configuration
+# This file contains common settings for all environments
+# Environment-specific overrides go in values-dev.yaml or values-prod.yaml
+
+# Gateway Configuration
+gateway:
+  image:
+    repository: ghcr.io/ibm/mcp-context-forge
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  # Auto-scaling
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+
+  # Environment variables
+  env:
+    LOG_LEVEL: "INFO"
+    ENABLE_CORS: "true"
+    CORS_ORIGINS: "*"
+
+# PostgreSQL Configuration
+postgresql:
+  enabled: true
+  auth:
+    database: mcpforge
+    username: mcpforge
+    # Password should be set via values-{env}.yaml or secrets
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# Redis Configuration (for federation/caching)
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: true
+    # Password should be set via values-{env}.yaml or secrets
+  master:
+    persistence:
+      enabled: true
+      size: 5Gi
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: ingress-nginx-internal
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  tls:
+    enabled: true
+
+# Service Account
+serviceAccount:
+  create: true
+  name: mcp-gateway
+
+# Pod Security
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Health Checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 5
+
+# Optional UI Tools (disabled by default in prod)
+pgadmin:
+  enabled: false
+
+redisCommander:
+  enabled: false

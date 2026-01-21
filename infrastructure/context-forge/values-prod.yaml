@@ -1,0 +1,72 @@
+# MCP Context Forge - Production Environment Overrides
+
+gateway:
+  replicaCount: 3
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+  env:
+    LOG_LEVEL: "WARNING"
+
+# Ingress for prod
+ingress:
+  hosts:
+    - host: mcp-gateway.tcloud.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mcp-gateway-prod-tls
+      hosts:
+        - mcp-gateway.tcloud.internal
+
+# Production database settings
+postgresql:
+  auth:
+    existingSecret: mcp-postgresql-secret  # Use external secret in prod
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+
+redis:
+  auth:
+    existingSecret: mcp-redis-secret  # Use external secret in prod
+    existingSecretPasswordKey: redis-password
+  master:
+    persistence:
+      size: 10Gi
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+
+# Disable UI tools in prod
+pgadmin:
+  enabled: false
+
+redisCommander:
+  enabled: false

@@ -1,0 +1,44 @@
+# MCP Context Forge - Development Environment Overrides
+
+gateway:
+  replicaCount: 1
+
+  autoscaling:
+    enabled: false
+
+  env:
+    LOG_LEVEL: "DEBUG"
+
+# Ingress for dev
+ingress:
+  hosts:
+    - host: mcp-gateway.dev.tcloud.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mcp-gateway-dev-tls
+      hosts:
+        - mcp-gateway.dev.tcloud.internal
+
+# Smaller storage for dev
+postgresql:
+  auth:
+    password: "dev-password-change-me"  # TODO: Use external secret
+  primary:
+    persistence:
+      size: 5Gi
+
+redis:
+  auth:
+    password: "dev-redis-password"  # TODO: Use external secret
+  master:
+    persistence:
+      size: 2Gi
+
+# Enable UI tools in dev for debugging
+pgadmin:
+  enabled: true
+
+redisCommander:
+  enabled: true
