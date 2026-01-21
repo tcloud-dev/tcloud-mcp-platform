@@ -56,8 +56,16 @@ tcloud-mcp-platform/
 
 | Environment | Namespace | Gateway URL |
 |-------------|-----------|-------------|
-| Dev | mcp-dev | https://mcp-gateway.dev.tcloud.internal |
-| Prod | mcp | https://mcp-gateway.tcloud.internal |
+| Dev | mcp-dev | https://mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh |
+| Prod | mcp | https://mcp-gateway.tcloud.internal (planned) |
+
+### Dev Environment Details (Cluster tbf8b9d)
+- **Admin UI**: https://mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh/admin/login
+- **Health**: https://mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh/health
+- **Ingress**: Public controller (.223), no ingressClassName
+- **Credentials**: 
+  - Email: admin@example.com
+  - Password: `kubectl -n mcp-dev get secret mcp-stack-gateway-secret -o jsonpath="{.data.BASIC_AUTH_PASSWORD}" | base64 -d`
 
 ## Related Repositories
 

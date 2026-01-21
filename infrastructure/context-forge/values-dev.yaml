@@ -1,44 +1,80 @@
-# MCP Context Forge - Development Environment Overrides
+# MCP Context Forge - Development Environment
+# Cluster: tbf8b9d (K8s v1.31.6)
+# Namespace: mcp-dev
+# Access: NodePort (use kubectl port-forward or create separate NodePort service)
 
-gateway:
+# Gateway - single replica for dev
+mcpContextForge:
+  env:
+    postgres:
+      db: mcpforge  # Must match postgres.credentials.database
   replicaCount: 1
 
-  autoscaling:
-    enabled: false
+  image:
+    pullPolicy: Always  # Always pull latest in dev
 
-  env:
-    LOG_LEVEL: "DEBUG"
+  service:
+    type: NodePort
+    port: 80
+    # nodePort is set via kubectl patch (chart doesn't support it)
 
-# Ingress for dev
-ingress:
-  hosts:
-    - host: mcp-gateway.dev.tcloud.internal
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - secretName: mcp-gateway-dev-tls
-      hosts:
-        - mcp-gateway.dev.tcloud.internal
+  hpa:
+    enabled: false  # No autoscaling in dev
 
-# Smaller storage for dev
-postgresql:
-  auth:
-    password: "dev-password-change-me"  # TODO: Use external secret
-  primary:
-    persistence:
-      size: 5Gi
+  ingress:
+    enabled: true
+    # className omitted - use default public ingress (.223)
+    # Note: Helm chart requires className, so we patch it out after deploy
+    className: "nginx"
+    host: mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: false  # Cluster handles TLS automatically
 
+  config:
+    LOG_LEVEL: DEBUG
+    GUNICORN_WORKERS: "2"  # Reduce workers to avoid OOM (default is 16)
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "100m"
+    limits:
+      memory: "2Gi"  # Increase memory limit
+      cpu: "1000m"
+
+  # Secrets - set via --set for security
+  # --set mcpContextForge.secret.BASIC_AUTH_PASSWORD=<senha>
+  # --set mcpContextForge.secret.JWT_SECRET_KEY=<secret>
+
+# PostgreSQL - smaller for dev
+postgres:
+  persistence:
+    enabled: true
+    storageClassName: "default-persistence"
+    size: 5Gi
+  credentials:
+    database: mcpforge
+    user: mcpforge
+    # password set via --set postgres.credentials.password=<senha>
+
+# Redis - smaller for dev, with persistence
 redis:
-  auth:
-    password: "dev-redis-password"  # TODO: Use external secret
-  master:
-    persistence:
-      size: 2Gi
+  persistence:
+    enabled: true
+    storageClassName: "default-persistence"
+    size: 1Gi
 
-# Enable UI tools in dev for debugging
+# Disable all optional components in dev
 pgadmin:
-  enabled: true
+  enabled: false
 
 redisCommander:
-  enabled: true
+  enabled: false
+
+minio:
+  enabled: false
+
+mcpFastTimeServer:
+  enabled: false

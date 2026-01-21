@@ -1,101 +1,86 @@
 # MCP Context Forge - Base Configuration
 # This file contains common settings for all environments
 # Environment-specific overrides go in values-dev.yaml or values-prod.yaml
+#
+# Chart: https://github.com/IBM/mcp-context-forge
 
 # Gateway Configuration
-gateway:
+mcpContextForge:
+  env:
+    postgres:
+      db: mcpforge  # Must match postgres.credentials.database
+  replicaCount: 2
+
   image:
     repository: ghcr.io/ibm/mcp-context-forge
     tag: latest
     pullPolicy: IfNotPresent
 
-  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
 
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
-
-  # Auto-scaling
-  autoscaling:
+  hpa:
     enabled: true
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilizationPercentage: 80
 
-  # Environment variables
-  env:
-    LOG_LEVEL: "INFO"
-    ENABLE_CORS: "true"
-    CORS_ORIGINS: "*"
+  ingress:
+    enabled: true
+    className: ingress-nginx-internal
+    host: mcp-gateway.tcloud.internal
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: false
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "100m"
+    limits:
+      memory: "1024Mi"
+      cpu: "500m"
+
+  config:
+    LOG_LEVEL: INFO
+    HTTP_SERVER: "gunicorn"
+    CACHE_TYPE: redis
+    ENVIRONMENT: production
+
+  secret:
+    BASIC_AUTH_USER: admin
+    AUTH_REQUIRED: "true"
 
 # PostgreSQL Configuration
-postgresql:
+postgres:
   enabled: true
-  auth:
+  persistence:
+    enabled: true
+    storageClassName: "default-persistence"
+    size: 10Gi
+  credentials:
     database: mcpforge
-    username: mcpforge
-    # Password should be set via values-{env}.yaml or secrets
-  primary:
-    persistence:
-      enabled: true
-      size: 10Gi
+    user: mcpforge
 
-# Redis Configuration (for federation/caching)
+# Redis Configuration
 redis:
   enabled: true
-  architecture: standalone
-  auth:
+  persistence:
     enabled: true
-    # Password should be set via values-{env}.yaml or secrets
-  master:
-    persistence:
-      enabled: true
-      size: 5Gi
+    storageClassName: "default-persistence"
+    size: 5Gi
 
-# Ingress Configuration
-ingress:
-  enabled: true
-  className: ingress-nginx-internal
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-  tls:
-    enabled: true
-
-# Service Account
-serviceAccount:
-  create: true
-  name: mcp-gateway
-
-# Pod Security
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
-  fsGroup: 1000
-
-# Health Checks
-livenessProbe:
-  httpGet:
-    path: /health
-    port: 8000
-  initialDelaySeconds: 30
-  periodSeconds: 10
-
-readinessProbe:
-  httpGet:
-    path: /health
-    port: 8000
-  initialDelaySeconds: 5
-  periodSeconds: 5
-
-# Optional UI Tools (disabled by default in prod)
+# Disable optional components by default
 pgadmin:
   enabled: false
 
 redisCommander:
+  enabled: false
+
+minio:
+  enabled: false
+
+mcpFastTimeServer:
   enabled: false
