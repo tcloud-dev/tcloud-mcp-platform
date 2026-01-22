@@ -44,10 +44,62 @@ mcpContextForge:
     HTTP_SERVER: "gunicorn"
     CACHE_TYPE: redis
     ENVIRONMENT: production
+    # Plugin configuration
+    PLUGINS_ENABLED: "true"
 
   secret:
     BASIC_AUTH_USER: admin
     AUTH_REQUIRED: "true"
+
+  # TCloud Cognito Auth Plugin - Environment Variables
+  # These are loaded from tcloud-cognito-auth-secret
+  extraEnv:
+    - name: COGNITO_USER_POOL_ID
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: COGNITO_USER_POOL_ID
+          optional: true
+    - name: COGNITO_REGION
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: COGNITO_REGION
+          optional: true
+    - name: COGNITO_APP_CLIENT_ID
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: COGNITO_APP_CLIENT_ID
+          optional: true
+    - name: TCLOUD_API_URL
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: TCLOUD_API_URL
+          optional: true
+    - name: TCLOUD_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: TCLOUD_API_KEY
+          optional: true
+    - name: PERMISSION_CACHE_TTL
+      value: "300"
+    - name: JWKS_CACHE_TTL
+      value: "3600"
+
+  # Mount plugin code from ConfigMap
+  extraVolumeMounts:
+    - name: tcloud-cognito-plugin
+      mountPath: /etc/mcpgateway/plugins/tcloud_cognito_auth
+      readOnly: true
+
+  extraVolumes:
+    - name: tcloud-cognito-plugin
+      configMap:
+        name: tcloud-cognito-auth-plugin
+        optional: true
 
 postgres:
   enabled: true
