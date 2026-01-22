@@ -157,6 +157,71 @@ list-agents: ## List registered agents (run port-forward first)
 	@echo "📋 Listing registered agents..."
 	curl -s http://localhost:8080/admin/gateways | jq
 
+# ==================== Plugin Management ====================
+
+build-plugin-configmap: ## Build ConfigMap from plugin code
+	@echo "📦 Building plugin ConfigMap..."
+	@kubectl create configmap tcloud-cognito-auth-plugin \
+		--from-file=plugins/tcloud_cognito_auth/__init__.py \
+		--from-file=plugins/tcloud_cognito_auth/config.py \
+		--from-file=plugins/tcloud_cognito_auth/exceptions.py \
+		--from-file=plugins/tcloud_cognito_auth/models.py \
+		--from-file=plugins/tcloud_cognito_auth/cognito.py \
+		--from-file=plugins/tcloud_cognito_auth/tcloud_api.py \
+		--from-file=plugins/tcloud_cognito_auth/cache.py \
+		--from-file=plugins/tcloud_cognito_auth/tcloud_cognito_auth.py \
+		--from-file=plugins/tcloud_cognito_auth/plugin-manifest.yaml \
+		--dry-run=client -o yaml > infrastructure/context-forge/plugin-configmap.yaml
+	@echo "✅ ConfigMap saved to infrastructure/context-forge/plugin-configmap.yaml"
+
+deploy-plugin-configmap: build-plugin-configmap ## Deploy plugin ConfigMap (ENV=dev|prod)
+ifeq ($(ENV),prod)
+	kubectl apply -f infrastructure/context-forge/plugin-configmap.yaml -n $(NAMESPACE_PROD)
+else
+	kubectl apply -f infrastructure/context-forge/plugin-configmap.yaml -n $(NAMESPACE_DEV)
+endif
+	@echo "✅ Plugin ConfigMap deployed"
+
+create-auth-secret: ## Create TCloud Cognito auth secret (interactive)
+ifndef COGNITO_USER_POOL_ID
+	$(error COGNITO_USER_POOL_ID is required)
+endif
+ifndef COGNITO_APP_CLIENT_ID
+	$(error COGNITO_APP_CLIENT_ID is required)
+endif
+ifndef TCLOUD_API_URL
+	$(error TCLOUD_API_URL is required)
+endif
+ifndef TCLOUD_API_KEY
+	$(error TCLOUD_API_KEY is required)
+endif
+ifeq ($(ENV),prod)
+	@echo "🔐 Creating auth secret in PRODUCTION..."
+	kubectl create secret generic tcloud-cognito-auth-secret \
+		--from-literal=COGNITO_USER_POOL_ID="$(COGNITO_USER_POOL_ID)" \
+		--from-literal=COGNITO_REGION="$(COGNITO_REGION)" \
+		--from-literal=COGNITO_APP_CLIENT_ID="$(COGNITO_APP_CLIENT_ID)" \
+		--from-literal=TCLOUD_API_URL="$(TCLOUD_API_URL)" \
+		--from-literal=TCLOUD_API_KEY="$(TCLOUD_API_KEY)" \
+		-n $(NAMESPACE_PROD) --dry-run=client -o yaml | kubectl apply -f -
+else
+	@echo "🔐 Creating auth secret in DEV..."
+	kubectl create secret generic tcloud-cognito-auth-secret \
+		--from-literal=COGNITO_USER_POOL_ID="$(COGNITO_USER_POOL_ID)" \
+		--from-literal=COGNITO_REGION="$(COGNITO_REGION)" \
+		--from-literal=COGNITO_APP_CLIENT_ID="$(COGNITO_APP_CLIENT_ID)" \
+		--from-literal=TCLOUD_API_URL="$(TCLOUD_API_URL)" \
+		--from-literal=TCLOUD_API_KEY="$(TCLOUD_API_KEY)" \
+		-n $(NAMESPACE_DEV) --dry-run=client -o yaml | kubectl apply -f -
+endif
+	@echo "✅ Auth secret created"
+
+test-plugin: ## Run plugin unit tests
+	@echo "🧪 Running plugin tests..."
+	cd plugins/tcloud_cognito_auth && \
+		pip install -r requirements.txt -q && \
+		PYTHONPATH=.. pytest tests/ -v
+
 # ==================== Development ====================
 
 template: clone-chart ## Render Helm templates locally (ENV=dev|prod)
