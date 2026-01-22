@@ -1,0 +1,25 @@
+# MCP Context Forge - Plugin Configuration
+#
+# This file configures which plugins are enabled and their settings.
+# Mount this file to /etc/mcpgateway/plugins/config.yaml in the container.
+
+plugins:
+  # TCloud Cognito Authentication Plugin
+  - name: "TCloudCognitoAuthPlugin"
+    kind: "tcloud_cognito_auth.tcloud_cognito_auth.TCloudCognitoAuthPlugin"
+    description: "Authenticate via Cognito JWT and fetch TCloud API permissions"
+    version: "1.0.0"
+    author: "TCloud Platform Team"
+    hooks:
+      - "http_auth_resolve_user"
+      - "agent_pre_invoke"
+      - "tool_pre_invoke"
+    mode: "enforce"  # enforce | audit | disabled
+    priority: 10     # Lower priority runs first
+    config:
+      # These can be overridden, but typically use environment variables
+      cognito_region: "${COGNITO_REGION:-us-east-2}"
+      permission_cache_ttl: 300
+      jwks_cache_ttl: 3600
+      enable_header_propagation: true
+      clock_skew_tolerance: 300
