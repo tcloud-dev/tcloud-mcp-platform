@@ -126,10 +126,17 @@ class TCloudCognitoAuthPlugin(Plugin):
         if not self._plugin_initialized:
             await self.initialize()
 
-        # Extract credentials from payload
-        credentials = payload.get("credentials", {})
-        token = credentials.get("credentials")
-        scheme = credentials.get("scheme", "").lower()
+        # Extract credentials from payload (payload can be dict or HttpAuthResolveUserPayload object)
+        if hasattr(payload, "credentials"):
+            # Payload is an object with attributes
+            creds_obj = payload.credentials
+            token = getattr(creds_obj, "credentials", None)
+            scheme = getattr(creds_obj, "scheme", "").lower()
+        else:
+            # Payload is a dict
+            credentials = payload.get("credentials", {})
+            token = credentials.get("credentials")
+            scheme = credentials.get("scheme", "").lower()
 
         # Skip if no bearer token
         if not token or scheme != "bearer":
