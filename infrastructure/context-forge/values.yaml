@@ -1,6 +1,10 @@
 # MCP Context Forge - Base Configuration
 # Chart: https://github.com/IBM/mcp-context-forge
 
+global:
+  imagePullSecrets:
+    - ghcr-secret
+
 mcpContextForge:
   env:
     postgres:
@@ -8,9 +12,9 @@ mcpContextForge:
   replicaCount: 2
 
   image:
-    repository: ghcr.io/ibm/mcp-context-forge
-    tag: latest
-    pullPolicy: IfNotPresent
+    repository: ghcr.io/tcloud-dev/mcp-context-forge
+    tag: with-auth
+    pullPolicy: Always
 
   service:
     type: ClusterIP
@@ -44,10 +48,67 @@ mcpContextForge:
     HTTP_SERVER: "gunicorn"
     CACHE_TYPE: redis
     ENVIRONMENT: production
+    # Plugin configuration
+    PLUGINS_ENABLED: "true"
 
   secret:
     BASIC_AUTH_USER: admin
     AUTH_REQUIRED: "true"
+
+  # TCloud Cognito Auth Plugin - Environment Variables
+  # These are loaded from tcloud-cognito-auth-secret
+  extraEnv:
+    - name: COGNITO_USER_POOL_ID
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: COGNITO_USER_POOL_ID
+          optional: true
+    - name: COGNITO_REGION
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: COGNITO_REGION
+          optional: true
+    - name: COGNITO_APP_CLIENT_ID
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: COGNITO_APP_CLIENT_ID
+          optional: true
+    - name: TCLOUD_API_URL
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: TCLOUD_API_URL
+          optional: true
+    - name: TCLOUD_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: tcloud-cognito-auth-secret
+          key: TCLOUD_API_KEY
+          optional: true
+    - name: PERMISSION_CACHE_TTL
+      value: "300"
+    - name: JWKS_CACHE_TTL
+      value: "3600"
+
+  # Plugin configuration
+  pluginConfig:
+    enabled: true
+    plugins: |
+      plugin_settings:
+        enable_plugin_api: true
+        plugin_timeout: 30
+        fail_on_plugin_error: false
+      plugins:
+        - name: TCloudCognitoAuthPlugin
+          kind: plugins.tcloud_cognito_auth.tcloud_cognito_auth.TCloudCognitoAuthPlugin
+          hooks:
+            - http_auth_resolve_user
+            - agent_pre_invoke
+          mode: enforce
+          priority: 10
 
 postgres:
   enabled: true

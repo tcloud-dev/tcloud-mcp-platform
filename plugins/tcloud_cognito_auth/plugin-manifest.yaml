@@ -1,0 +1,39 @@
+name: "TCloudCognitoAuthPlugin"
+description: "TCloud Cognito Authentication Plugin - JWT validation, TCloud API permissions, and header propagation"
+author: "TCloud Platform Team"
+version: "1.0.0"
+
+# Hooks this plugin implements
+available_hooks:
+  - "http_auth_resolve_user"
+  - "agent_pre_invoke"
+
+# Default configuration
+default_configs:
+  cognito_region: "us-east-2"
+  permission_cache_ttl: 300
+  jwks_cache_ttl: 3600
+  enable_header_propagation: true
+  clock_skew_tolerance: 300
+
+# Required environment variables
+required_env:
+  - COGNITO_USER_POOL_ID
+  - COGNITO_APP_CLIENT_ID
+  - TCLOUD_API_URL
+  - TCLOUD_API_KEY
+
+# Optional environment variables with defaults
+optional_env:
+  COGNITO_REGION: "us-east-2"
+  REDIS_URL: "redis://localhost:6379/0"
+  PERMISSION_CACHE_TTL: "300"
+  JWKS_CACHE_TTL: "3600"
+
+# Dependencies
+dependencies:
+  - python-jose[cryptography]>=3.3.0
+  - httpx>=0.27.0
+  - redis>=5.0.0
+  - pydantic>=2.0.0
+  - pydantic-settings>=2.0.0

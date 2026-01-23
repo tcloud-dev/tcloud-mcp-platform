@@ -1,0 +1,1305 @@
+apiVersion: v1
+data:
+  __init__.py: |
+    """TCloud Cognito Authentication Plugin for MCP Context Forge.
+
+    This plugin provides:
+    - JWT validation via AWS Cognito
+    - User permissions fetching from TCloud API
+    - Redis caching for permissions
+    - Header propagation to downstream agents
+    """
+
+    __version__ = "1.0.0"
+    __author__ = "TCloud Platform Team"
+
+    from .tcloud_cognito_auth import TCloudCognitoAuthPlugin
+
+    __all__ = ["TCloudCognitoAuthPlugin"]
+  cache.py: |
+    """Redis cache for user permissions."""
+
+    import hashlib
+    import json
+    import logging
+    from typing import Any
+
+    import redis.asyncio as redis
+
+    from .config import PluginSettings
+    from .exceptions import CacheError
+    from .models import UserPermissions
+
+    logger = logging.getLogger(__name__)
+
+
+    class PermissionCache:
+        """Redis-based cache for user permissions."""
+
+        CACHE_PREFIX = "tcloud:auth:permissions:"
+
+        def __init__(self, settings: PluginSettings):
+            """Initialize the permission cache.
+
+            Args:
+                settings: Plugin configuration settings.
+            """
+            self.settings = settings
+            self._redis: redis.Redis | None = None
+
+        async def initialize(self) -> None:
+            """Initialize Redis connection."""
+            try:
+                self._redis = redis.from_url(
+                    self.settings.redis_url,
+                    encoding="utf-8",
+                    decode_responses=True,
+                )
+                # Test connection
+                await self._redis.ping()
+                logger.info("Redis cache initialized successfully")
+            except redis.RedisError as e:
+                logger.warning(f"Failed to connect to Redis: {e}. Cache disabled.")
+                self._redis = None
+
+        async def shutdown(self) -> None:
+            """Close Redis connection."""
+            if self._redis:
+                await self._redis.close()
+                self._redis = None
+
+        @property
+        def is_available(self) -> bool:
+            """Check if cache is available."""
+            return self._redis is not None
+
+        async def get_permissions(self, email: str) -> UserPermissions | None:
+            """Get cached permissions for a user.
+
+            Args:
+                email: User email address.
+
+            Returns:
+                Cached UserPermissions or None if not found/expired.
+            """
+            if not self._redis:
+                return None
+
+            cache_key = self._make_key(email)
+
+            try:
+                data = await self._redis.get(cache_key)
+                if data:
+                    parsed = json.loads(data)
+                    logger.debug(f"Cache hit for {email}")
+                    return UserPermissions.from_cache_dict(parsed)
+                logger.debug(f"Cache miss for {email}")
+                return None
+            except redis.RedisError as e:
+                logger.warning(f"Redis get error: {e}")
+                return None
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Cache data parse error: {e}")
+                return None
+
+        async def set_permissions(
+            self,
+            email: str,
+            permissions: UserPermissions,
+            ttl: int | None = None,
+        ) -> bool:
+            """Cache user permissions.
+
+            Args:
+                email: User email address.
+                permissions: UserPermissions to cache.
+                ttl: Optional TTL override in seconds.
+
+            Returns:
+                True if cached successfully, False otherwise.
+            """
+            if not self._redis:
+                return False
+
+            cache_key = self._make_key(email)
+            cache_ttl = ttl or self.settings.permission_cache_ttl
+
+            try:
+                data = json.dumps(permissions.to_cache_dict())
+                await self._redis.set(cache_key, data, ex=cache_ttl)
+                logger.debug(f"Cached permissions for {email} (TTL: {cache_ttl}s)")
+                return True
+            except redis.RedisError as e:
+                logger.warning(f"Redis set error: {e}")
+                return False
+
+        async def invalidate(self, email: str) -> bool:
+            """Invalidate cached permissions for a user.
+
+            Args:
+                email: User email address.
+
+            Returns:
+                True if invalidated, False otherwise.
+            """
+            if not self._redis:
+                return False
+
+            cache_key = self._make_key(email)
+
+            try:
+                result = await self._redis.delete(cache_key)
+                logger.debug(f"Invalidated cache for {email}: {result}")
+                return result > 0
+            except redis.RedisError as e:
+                logger.warning(f"Redis delete error: {e}")
+                return False
+
+        async def get_or_fetch(
+            self,
+            email: str,
+            fetch_func,
+            ttl: int | None = None,
+        ) -> UserPermissions:
+            """Get permissions from cache or fetch and cache.
+
+            Args:
+                email: User email address.
+                fetch_func: Async function to fetch permissions if not cached.
+                ttl: Optional TTL override in seconds.
+
+            Returns:
+                UserPermissions from cache or freshly fetched.
+            """
+            # Try cache first
+            cached = await self.get_permissions(email)
+            if cached:
+                return cached
+
+            # Fetch fresh data
+            permissions = await fetch_func()
+
+            # Cache the result (fire and forget)
+            await self.set_permissions(email, permissions, ttl)
+
+            return permissions
+
+        def _make_key(self, email: str) -> str:
+            """Generate cache key for email.
+
+            Args:
+                email: User email address.
+
+            Returns:
+                Cache key string.
+            """
+            # Use hash to handle special characters and keep keys short
+            email_hash = hashlib.sha256(email.lower().encode()).hexdigest()[:16]
+            return f"{self.CACHE_PREFIX}{email_hash}"
+
+
+    class TokenCache:
+        """Redis-based cache for validated tokens."""
+
+        CACHE_PREFIX = "tcloud:auth:token:"
+
+        def __init__(self, settings: PluginSettings):
+            """Initialize the token cache.
+
+            Args:
+                settings: Plugin configuration settings.
+            """
+            self.settings = settings
+            self._redis: redis.Redis | None = None
+
+        async def initialize(self, redis_client: redis.Redis | None = None) -> None:
+            """Initialize Redis connection.
+
+            Args:
+                redis_client: Optional existing Redis client to reuse.
+            """
+            if redis_client:
+                self._redis = redis_client
+            else:
+                try:
+                    self._redis = redis.from_url(
+                        self.settings.redis_url,
+                        encoding="utf-8",
+                        decode_responses=True,
+                    )
+                    await self._redis.ping()
+                except redis.RedisError as e:
+                    logger.warning(f"Failed to connect to Redis: {e}. Token cache disabled.")
+                    self._redis = None
+
+        async def shutdown(self) -> None:
+            """Close Redis connection."""
+            if self._redis:
+                await self._redis.close()
+                self._redis = None
+
+        async def is_token_valid(self, token_hash: str) -> bool | None:
+            """Check if token was previously validated.
+
+            Args:
+                token_hash: Hash of the token.
+
+            Returns:
+                True if valid, False if invalid, None if not cached.
+            """
+            if not self._redis:
+                return None
+
+            cache_key = f"{self.CACHE_PREFIX}{token_hash}"
+
+            try:
+                result = await self._redis.get(cache_key)
+                if result is None:
+                    return None
+                return result == "1"
+            except redis.RedisError:
+                return None
+
+        async def cache_token_result(
+            self,
+            token_hash: str,
+            is_valid: bool,
+            ttl: int = 60,
+        ) -> None:
+            """Cache token validation result.
+
+            Args:
+                token_hash: Hash of the token.
+                is_valid: Whether the token is valid.
+                ttl: Cache TTL in seconds.
+            """
+            if not self._redis:
+                return
+
+            cache_key = f"{self.CACHE_PREFIX}{token_hash}"
+
+            try:
+                await self._redis.set(cache_key, "1" if is_valid else "0", ex=ttl)
+            except redis.RedisError:
+                pass
+
+        @staticmethod
+        def hash_token(token: str) -> str:
+            """Generate hash for token.
+
+            Args:
+                token: JWT token string.
+
+            Returns:
+                SHA256 hash of the token.
+            """
+            return hashlib.sha256(token.encode()).hexdigest()
+  cognito.py: |
+    """AWS Cognito JWT validation for TCloud Auth Plugin."""
+
+    import time
+    from typing import Any
+
+    import httpx
+    from jose import jwt, JWTError
+    from jose.exceptions import ExpiredSignatureError, JWTClaimsError
+
+    from .config import PluginSettings
+    from .exceptions import (
+        InvalidAudienceError,
+        InvalidIssuerError,
+        InvalidSignatureError,
+        JWKSFetchError,
+        KeyNotFoundError,
+        TokenExpiredError,
+        TokenValidationError,
+    )
+    from .models import CognitoClaims
+
+
+    class CognitoJWTValidator:
+        """Validates JWT tokens issued by AWS Cognito."""
+
+        def __init__(self, settings: PluginSettings):
+            """Initialize the validator with settings.
+
+            Args:
+                settings: Plugin configuration settings.
+            """
+            self.settings = settings
+            self._jwks_cache: dict[str, Any] | None = None
+            self._jwks_cache_time: float = 0
+            self._http_client: httpx.AsyncClient | None = None
+
+        async def initialize(self) -> None:
+            """Initialize the HTTP client and pre-fetch JWKS."""
+            self._http_client = httpx.AsyncClient(timeout=10.0)
+            await self._refresh_jwks()
+
+        async def shutdown(self) -> None:
+            """Clean up resources."""
+            if self._http_client:
+                await self._http_client.aclose()
+                self._http_client = None
+
+        async def validate_token(self, token: str) -> CognitoClaims:
+            """Validate a Cognito JWT token.
+
+            Args:
+                token: The JWT token string (without 'Bearer ' prefix).
+
+            Returns:
+                Parsed and validated token claims.
+
+            Raises:
+                TokenValidationError: If token validation fails.
+                TokenExpiredError: If token has expired.
+                InvalidSignatureError: If signature verification fails.
+                InvalidIssuerError: If issuer is invalid.
+                InvalidAudienceError: If audience/client_id is invalid.
+            """
+            try:
+                # Get the key ID from the token header
+                unverified_header = jwt.get_unverified_header(token)
+                kid = unverified_header.get("kid")
+
+                if not kid:
+                    raise TokenValidationError("Token header missing 'kid'")
+
+                # Get the signing key from JWKS
+                signing_key = await self._get_signing_key(kid)
+
+                # Decode and validate the token
+                claims = jwt.decode(
+                    token,
+                    signing_key,
+                    algorithms=["RS256"],
+                    issuer=self.settings.cognito_issuer,
+                    options={
+                        "verify_aud": False,  # We'll verify client_id manually for access tokens
+                        "leeway": self.settings.clock_skew_tolerance,
+                    },
+                )
+
+                # Parse claims into model
+                parsed_claims = CognitoClaims(**claims)
+
+                # Validate client_id for access tokens
+                if parsed_claims.token_use == "access":
+                    if parsed_claims.client_id != self.settings.cognito_app_client_id:
+                        raise InvalidAudienceError(
+                            f"Invalid client_id: {parsed_claims.client_id}"
+                        )
+
+                return parsed_claims
+
+            except ExpiredSignatureError as e:
+                raise TokenExpiredError(str(e))
+            except JWTClaimsError as e:
+                if "issuer" in str(e).lower():
+                    raise InvalidIssuerError(str(e))
+                raise TokenValidationError(str(e))
+            except JWTError as e:
+                error_msg = str(e).lower()
+                if "signature" in error_msg:
+                    raise InvalidSignatureError(str(e))
+                raise TokenValidationError(str(e))
+
+        async def _get_signing_key(self, kid: str) -> dict[str, Any]:
+            """Get the signing key from JWKS by key ID.
+
+            Args:
+                kid: The key ID from the JWT header.
+
+            Returns:
+                The JWK for the given key ID.
+
+            Raises:
+                KeyNotFoundError: If key is not found in JWKS.
+            """
+            jwks = await self._get_jwks()
+
+            for key in jwks.get("keys", []):
+                if key.get("kid") == kid:
+                    return key
+
+            # Key not found, try refreshing JWKS (key rotation may have occurred)
+            await self._refresh_jwks()
+            jwks = self._jwks_cache
+
+            for key in jwks.get("keys", []):
+                if key.get("kid") == kid:
+                    return key
+
+            raise KeyNotFoundError(f"Key with kid '{kid}' not found in JWKS")
+
+        async def _get_jwks(self) -> dict[str, Any]:
+            """Get JWKS, using cache if available and not expired.
+
+            Returns:
+                The JWKS dictionary.
+            """
+            now = time.time()
+            cache_age = now - self._jwks_cache_time
+
+            if self._jwks_cache and cache_age < self.settings.jwks_cache_ttl:
+                return self._jwks_cache
+
+            await self._refresh_jwks()
+            return self._jwks_cache
+
+        async def _refresh_jwks(self) -> None:
+            """Fetch fresh JWKS from Cognito.
+
+            Raises:
+                JWKSFetchError: If JWKS cannot be fetched.
+            """
+            if not self._http_client:
+                self._http_client = httpx.AsyncClient(timeout=10.0)
+
+            try:
+                response = await self._http_client.get(self.settings.cognito_jwks_url)
+                response.raise_for_status()
+                self._jwks_cache = response.json()
+                self._jwks_cache_time = time.time()
+            except httpx.HTTPError as e:
+                # If we have cached JWKS, use it as fallback
+                if self._jwks_cache:
+                    return
+                raise JWKSFetchError(f"Failed to fetch JWKS: {e}")
+
+        def extract_token_from_header(self, auth_header: str | None) -> str | None:
+            """Extract Bearer token from Authorization header.
+
+            Args:
+                auth_header: The Authorization header value.
+
+            Returns:
+                The token string, or None if not found/invalid.
+            """
+            if not auth_header:
+                return None
+
+            parts = auth_header.split()
+            if len(parts) != 2 or parts[0].lower() != "bearer":
+                return None
+
+            return parts[1]
+  config.py: |
+    """Configuration management for TCloud Cognito Auth Plugin."""
+
+    from pydantic import Field
+    from pydantic_settings import BaseSettings
+
+
+    class PluginSettings(BaseSettings):
+        """Plugin configuration loaded from environment variables."""
+
+        # Cognito settings
+        cognito_user_pool_id: str = Field(
+            ...,
+            description="AWS Cognito User Pool ID",
+        )
+        cognito_region: str = Field(
+            default="us-east-2",
+            description="AWS region for Cognito",
+        )
+        cognito_app_client_id: str = Field(
+            ...,
+            description="Cognito App Client ID for audience validation",
+        )
+
+        # TCloud API settings
+        tcloud_api_url: str = Field(
+            ...,
+            description="TCloud API base URL",
+        )
+        tcloud_api_key: str = Field(
+            ...,
+            description="TCloud API authentication key",
+        )
+
+        # Cache settings
+        redis_url: str = Field(
+            default="redis://localhost:6379/0",
+            description="Redis connection URL",
+        )
+        permission_cache_ttl: int = Field(
+            default=300,
+            description="Permission cache TTL in seconds",
+        )
+
+        # JWKS cache settings
+        jwks_cache_ttl: int = Field(
+            default=3600,
+            description="JWKS cache TTL in seconds (1 hour)",
+        )
+
+        # Plugin behavior
+        enable_header_propagation: bool = Field(
+            default=True,
+            description="Enable header propagation to downstream agents",
+        )
+        clock_skew_tolerance: int = Field(
+            default=300,
+            description="Clock skew tolerance in seconds for token validation",
+        )
+
+        model_config = {
+            "env_prefix": "",
+            "case_sensitive": False,
+            "extra": "ignore",
+        }
+
+        @property
+        def cognito_issuer(self) -> str:
+            """Get the Cognito issuer URL."""
+            return f"https://cognito-idp.{self.cognito_region}.amazonaws.com/{self.cognito_user_pool_id}"
+
+        @property
+        def cognito_jwks_url(self) -> str:
+            """Get the Cognito JWKS URL."""
+            return f"{self.cognito_issuer}/.well-known/jwks.json"
+
+
+    def get_settings() -> PluginSettings:
+        """Get plugin settings from environment variables."""
+        return PluginSettings()
+  exceptions.py: |
+    """Custom exceptions for TCloud Cognito Auth Plugin."""
+
+
+    class TCloudAuthError(Exception):
+        """Base exception for TCloud authentication errors."""
+
+        def __init__(self, message: str, code: str = "AUTH_ERROR"):
+            self.message = message
+            self.code = code
+            super().__init__(self.message)
+
+
+    class TokenValidationError(TCloudAuthError):
+        """Raised when JWT token validation fails."""
+
+        def __init__(self, message: str, code: str = "INVALID_TOKEN"):
+            super().__init__(message, code)
+
+
+    class TokenExpiredError(TokenValidationError):
+        """Raised when JWT token has expired."""
+
+        def __init__(self, message: str = "Token has expired"):
+            super().__init__(message, "TOKEN_EXPIRED")
+
+
+    class InvalidSignatureError(TokenValidationError):
+        """Raised when JWT signature is invalid."""
+
+        def __init__(self, message: str = "Invalid token signature"):
+            super().__init__(message, "INVALID_SIGNATURE")
+
+
+    class InvalidIssuerError(TokenValidationError):
+        """Raised when JWT issuer is invalid."""
+
+        def __init__(self, message: str = "Invalid token issuer"):
+            super().__init__(message, "INVALID_ISSUER")
+
+
+    class InvalidAudienceError(TokenValidationError):
+        """Raised when JWT audience is invalid."""
+
+        def __init__(self, message: str = "Invalid token audience"):
+            super().__init__(message, "INVALID_AUDIENCE")
+
+
+    class JWKSFetchError(TCloudAuthError):
+        """Raised when JWKS cannot be fetched."""
+
+        def __init__(self, message: str = "Failed to fetch JWKS"):
+            super().__init__(message, "JWKS_FETCH_ERROR")
+
+
+    class KeyNotFoundError(TCloudAuthError):
+        """Raised when signing key is not found in JWKS."""
+
+        def __init__(self, message: str = "Signing key not found in JWKS"):
+            super().__init__(message, "KEY_NOT_FOUND")
+
+
+    class TCloudAPIError(TCloudAuthError):
+        """Raised when TCloud API request fails."""
+
+        def __init__(self, message: str, status_code: int | None = None):
+            self.status_code = status_code
+            code = f"TCLOUD_API_ERROR_{status_code}" if status_code else "TCLOUD_API_ERROR"
+            super().__init__(message, code)
+
+
+    class CacheError(TCloudAuthError):
+        """Raised when cache operations fail."""
+
+        def __init__(self, message: str = "Cache operation failed"):
+            super().__init__(message, "CACHE_ERROR")
+  models.py: |
+    """Data models for TCloud Cognito Auth Plugin."""
+
+    from datetime import datetime
+    from typing import Any
+
+    from pydantic import BaseModel, Field
+
+
+    class CognitoClaims(BaseModel):
+        """Parsed claims from a Cognito JWT token."""
+
+        sub: str = Field(..., description="Subject (unique user ID)")
+        iss: str = Field(..., description="Issuer URL")
+        token_use: str = Field(..., description="Token use (access or id)")
+        exp: int = Field(..., description="Expiration timestamp")
+        iat: int = Field(..., description="Issued at timestamp")
+        client_id: str | None = Field(None, description="Client ID (for access tokens)")
+        username: str | None = Field(None, description="Username")
+        email: str | None = Field(None, description="User email (for id tokens)")
+        name: str | None = Field(None, description="User full name")
+
+        @property
+        def user_email(self) -> str:
+            """Extract user email from claims."""
+            if self.email:
+                return self.email
+            # For access tokens, extract email from username (format: provider_email)
+            if self.username and "_" in self.username:
+                return self.username.split("_", 1)[1]
+            return self.username or self.sub
+
+
+    class UserPermissions(BaseModel):
+        """User permissions fetched from TCloud API."""
+
+        email: str = Field(..., description="User email")
+        customers: list[str] = Field(
+            default_factory=list, description="List of customer/cloud IDs"
+        )
+        roles: list[str] = Field(default_factory=list, description="User roles")
+        permissions: list[str] = Field(
+            default_factory=list, description="Specific permissions"
+        )
+        fetched_at: datetime = Field(
+            default_factory=datetime.utcnow, description="When permissions were fetched"
+        )
+
+        def to_cache_dict(self) -> dict[str, Any]:
+            """Convert to dictionary for caching."""
+            return {
+                "email": self.email,
+                "customers": self.customers,
+                "roles": self.roles,
+                "permissions": self.permissions,
+                "fetched_at": self.fetched_at.isoformat(),
+            }
+
+        @classmethod
+        def from_cache_dict(cls, data: dict[str, Any]) -> "UserPermissions":
+            """Create from cached dictionary."""
+            if isinstance(data.get("fetched_at"), str):
+                data["fetched_at"] = datetime.fromisoformat(data["fetched_at"])
+            return cls(**data)
+
+
+    class AuthenticatedUser(BaseModel):
+        """Represents an authenticated user with permissions."""
+
+        email: str = Field(..., description="User email")
+        full_name: str | None = Field(None, description="User full name")
+        cognito_sub: str = Field(..., description="Cognito subject ID")
+        is_admin: bool = Field(default=False, description="Whether user is admin")
+        is_active: bool = Field(default=True, description="Whether user is active")
+        customers: list[str] = Field(
+            default_factory=list, description="Allowed customer IDs"
+        )
+        roles: list[str] = Field(default_factory=list, description="User roles")
+        permissions: list[str] = Field(default_factory=list, description="User permissions")
+        auth_method: str = Field(default="cognito", description="Authentication method")
+
+        def to_gateway_user(self) -> dict[str, Any]:
+            """Convert to Context Forge user format."""
+            return {
+                "email": self.email,
+                "full_name": self.full_name or self.email,
+                "is_admin": self.is_admin,
+                "is_active": self.is_active,
+            }
+
+        def to_metadata(self) -> dict[str, Any]:
+            """Convert to metadata for header propagation."""
+            return {
+                "auth_method": self.auth_method,
+                "cognito_sub": self.cognito_sub,
+                "customers": self.customers,
+                "roles": self.roles,
+                "permissions": self.permissions,
+            }
+
+
+    class PropagatedHeaders(BaseModel):
+        """Headers to propagate to downstream agents."""
+
+        x_user_email: str = Field(..., alias="X-User-Email")
+        x_user_customers: str = Field(..., alias="X-User-Customers")
+        x_request_id: str | None = Field(None, alias="X-Request-ID")
+
+        model_config = {"populate_by_name": True}
+
+        @classmethod
+        def from_authenticated_user(
+            cls, user: AuthenticatedUser, request_id: str | None = None
+        ) -> "PropagatedHeaders":
+            """Create headers from authenticated user."""
+            import json
+
+            return cls(
+                **{
+                    "X-User-Email": user.email,
+                    "X-User-Customers": json.dumps(user.customers),
+                    "X-Request-ID": request_id,
+                }
+            )
+  plugin-manifest.yaml: |
+    name: "TCloudCognitoAuthPlugin"
+    description: "TCloud Cognito Authentication Plugin - JWT validation, TCloud API permissions, and header propagation"
+    author: "TCloud Platform Team"
+    version: "1.0.0"
+
+    # Hooks this plugin implements
+    available_hooks:
+      - "http_auth_resolve_user"
+      - "agent_pre_invoke"
+
+    # Default configuration
+    default_configs:
+      cognito_region: "us-east-2"
+      permission_cache_ttl: 300
+      jwks_cache_ttl: 3600
+      enable_header_propagation: true
+      clock_skew_tolerance: 300
+
+    # Required environment variables
+    required_env:
+      - COGNITO_USER_POOL_ID
+      - COGNITO_APP_CLIENT_ID
+      - TCLOUD_API_URL
+      - TCLOUD_API_KEY
+
+    # Optional environment variables with defaults
+    optional_env:
+      COGNITO_REGION: "us-east-2"
+      REDIS_URL: "redis://localhost:6379/0"
+      PERMISSION_CACHE_TTL: "300"
+      JWKS_CACHE_TTL: "3600"
+
+    # Dependencies
+    dependencies:
+      - python-jose[cryptography]>=3.3.0
+      - httpx>=0.27.0
+      - redis>=5.0.0
+      - pydantic>=2.0.0
+      - pydantic-settings>=2.0.0
+  tcloud_api.py: |
+    """TCloud API client for user permissions."""
+
+    import logging
+    from typing import Any
+
+    import httpx
+
+    from .config import PluginSettings
+    from .exceptions import TCloudAPIError
+    from .models import UserPermissions
+
+    logger = logging.getLogger(__name__)
+
+
+    class TCloudAPIClient:
+        """Client for TCloud API to fetch user permissions."""
+
+        def __init__(self, settings: PluginSettings):
+            """Initialize the TCloud API client.
+
+            Args:
+                settings: Plugin configuration settings.
+            """
+            self.settings = settings
+            self._http_client: httpx.AsyncClient | None = None
+
+        async def initialize(self) -> None:
+            """Initialize the HTTP client."""
+            self._http_client = httpx.AsyncClient(
+                base_url=self.settings.tcloud_api_url,
+                timeout=30.0,
+                headers={
+                    "x-api-key": self.settings.tcloud_api_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+
+        async def shutdown(self) -> None:
+            """Clean up resources."""
+            if self._http_client:
+                await self._http_client.aclose()
+                self._http_client = None
+
+        async def get_user_permissions(
+            self, email: str, bearer_token: str | None = None
+        ) -> UserPermissions:
+            """Fetch user permissions from TCloud API.
+
+            Args:
+                email: User email address.
+                bearer_token: Optional Bearer token to forward to API.
+
+            Returns:
+                UserPermissions object with user's permissions.
+
+            Raises:
+                TCloudAPIError: If API request fails.
+            """
+            if not self._http_client:
+                await self.initialize()
+
+            headers = {}
+            if bearer_token:
+                headers["Authorization"] = f"Bearer {bearer_token}"
+
+            try:
+                # Try /customer endpoint first (main source of permissions)
+                response = await self._http_client.get("/customer", headers=headers)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    customers = self._extract_customers(data)
+                    return UserPermissions(
+                        email=email,
+                        customers=customers,
+                        roles=self._extract_roles(data),
+                        permissions=self._extract_permissions(data),
+                    )
+                elif response.status_code == 401:
+                    raise TCloudAPIError(
+                        "Unauthorized access to TCloud API", status_code=401
+                    )
+                elif response.status_code == 403:
+                    # User authenticated but has no permissions
+                    logger.warning(f"User {email} has no customer permissions")
+                    return UserPermissions(email=email, customers=[], roles=[], permissions=[])
+                else:
+                    raise TCloudAPIError(
+                        f"TCloud API error: {response.status_code} - {response.text}",
+                        status_code=response.status_code,
+                    )
+
+            except httpx.TimeoutException as e:
+                raise TCloudAPIError(f"TCloud API timeout: {e}")
+            except httpx.HTTPError as e:
+                raise TCloudAPIError(f"TCloud API request failed: {e}")
+
+        async def get_user_profile(
+            self, email: str, bearer_token: str | None = None
+        ) -> dict[str, Any]:
+            """Fetch user profile from TCloud API.
+
+            Args:
+                email: User email address.
+                bearer_token: Optional Bearer token to forward to API.
+
+            Returns:
+                User profile data.
+
+            Raises:
+                TCloudAPIError: If API request fails.
+            """
+            if not self._http_client:
+                await self.initialize()
+
+            headers = {}
+            if bearer_token:
+                headers["Authorization"] = f"Bearer {bearer_token}"
+
+            try:
+                response = await self._http_client.get("/user/profile", headers=headers)
+
+                if response.status_code == 200:
+                    return response.json()
+                elif response.status_code == 404:
+                    return {"email": email, "name": email}
+                else:
+                    logger.warning(
+                        f"Failed to fetch profile for {email}: {response.status_code}"
+                    )
+                    return {"email": email, "name": email}
+
+            except httpx.HTTPError as e:
+                logger.warning(f"Failed to fetch user profile: {e}")
+                return {"email": email, "name": email}
+
+        def _extract_customers(self, data: Any) -> list[str]:
+            """Extract customer/cloud IDs from API response.
+
+            Args:
+                data: API response data.
+
+            Returns:
+                List of customer/cloud IDs.
+            """
+            customers = []
+
+            if isinstance(data, list):
+                # Response is a list of customer objects
+                for item in data:
+                    if isinstance(item, dict):
+                        cloud_id = item.get("cloud_id") or item.get("cloudId") or item.get("id")
+                        if cloud_id:
+                            customers.append(str(cloud_id))
+            elif isinstance(data, dict):
+                # Response might have a customers/data array
+                items = data.get("customers") or data.get("data") or []
+                for item in items:
+                    if isinstance(item, dict):
+                        cloud_id = item.get("cloud_id") or item.get("cloudId") or item.get("id")
+                        if cloud_id:
+                            customers.append(str(cloud_id))
+
+            return customers
+
+        def _extract_roles(self, data: Any) -> list[str]:
+            """Extract user roles from API response.
+
+            Args:
+                data: API response data.
+
+            Returns:
+                List of role names.
+            """
+            roles = set()
+
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        role = item.get("role") or item.get("permission_level")
+                        if role:
+                            roles.add(str(role))
+            elif isinstance(data, dict):
+                user_roles = data.get("roles") or []
+                roles.update(str(r) for r in user_roles if r)
+
+            return list(roles)
+
+        def _extract_permissions(self, data: Any) -> list[str]:
+            """Extract specific permissions from API response.
+
+            Args:
+                data: API response data.
+
+            Returns:
+                List of permission strings.
+            """
+            permissions = set()
+
+            # Default read permissions if user has any customers
+            if isinstance(data, list) and len(data) > 0:
+                permissions.add("read:metrics")
+                permissions.add("read:logs")
+
+            if isinstance(data, dict):
+                user_perms = data.get("permissions") or []
+                permissions.update(str(p) for p in user_perms if p)
+
+            return list(permissions)
+  tcloud_cognito_auth.py: |
+    """TCloud Cognito Authentication Plugin for MCP Context Forge.
+
+    This plugin implements authentication via AWS Cognito JWT validation
+    and fetches user permissions from the TCloud API.
+    """
+
+    import json
+    import logging
+    from typing import Any
+
+    from .cache import PermissionCache
+    from .cognito import CognitoJWTValidator
+    from .config import PluginSettings, get_settings
+    from .exceptions import (
+        TCloudAPIError,
+        TCloudAuthError,
+        TokenExpiredError,
+        TokenValidationError,
+    )
+    from .models import AuthenticatedUser, PropagatedHeaders
+    from .tcloud_api import TCloudAPIClient
+
+    logger = logging.getLogger(__name__)
+
+
+    class TCloudCognitoAuthPlugin:
+        """TCloud Cognito Authentication Plugin.
+
+        Implements http_auth_resolve_user and agent_pre_invoke hooks for
+        MCP Context Forge to provide JWT-based authentication with
+        permission caching.
+        """
+
+        def __init__(self, config: dict[str, Any] | None = None):
+            """Initialize the plugin.
+
+            Args:
+                config: Optional configuration dictionary from Context Forge.
+            """
+            self._config = config or {}
+            self._settings: PluginSettings | None = None
+            self._cognito_validator: CognitoJWTValidator | None = None
+            self._tcloud_client: TCloudAPIClient | None = None
+            self._permission_cache: PermissionCache | None = None
+            self._initialized = False
+
+        @property
+        def settings(self) -> PluginSettings:
+            """Get plugin settings, loading from environment if needed."""
+            if not self._settings:
+                self._settings = get_settings()
+            return self._settings
+
+        async def initialize(self) -> None:
+            """Initialize plugin resources.
+
+            Called by Context Forge when the plugin is loaded.
+            """
+            if self._initialized:
+                return
+
+            logger.info("Initializing TCloud Cognito Auth Plugin")
+
+            # Initialize components
+            self._cognito_validator = CognitoJWTValidator(self.settings)
+            await self._cognito_validator.initialize()
+
+            self._tcloud_client = TCloudAPIClient(self.settings)
+            await self._tcloud_client.initialize()
+
+            self._permission_cache = PermissionCache(self.settings)
+            await self._permission_cache.initialize()
+
+            self._initialized = True
+            logger.info("TCloud Cognito Auth Plugin initialized successfully")
+
+        async def shutdown(self) -> None:
+            """Clean up plugin resources.
+
+            Called by Context Forge when the plugin is unloaded.
+            """
+            logger.info("Shutting down TCloud Cognito Auth Plugin")
+
+            if self._cognito_validator:
+                await self._cognito_validator.shutdown()
+            if self._tcloud_client:
+                await self._tcloud_client.shutdown()
+            if self._permission_cache:
+                await self._permission_cache.shutdown()
+
+            self._initialized = False
+
+        async def http_auth_resolve_user(
+            self,
+            payload: dict[str, Any],
+            context: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Resolve user from HTTP authentication credentials.
+
+            This hook is called by Context Forge to authenticate incoming requests.
+            It validates the Cognito JWT and fetches user permissions.
+
+            Args:
+                payload: Contains 'credentials' dict with auth info.
+                    - credentials.credentials: The Bearer token
+                    - credentials.scheme: The auth scheme (bearer)
+                context: Optional context from Context Forge.
+
+            Returns:
+                Dict with:
+                    - modified_payload: User info for Context Forge
+                    - metadata: Additional info including permissions
+                    - continue_processing: Whether to continue auth chain
+            """
+            if not self._initialized:
+                await self.initialize()
+
+            # Extract credentials from payload
+            credentials = payload.get("credentials", {})
+            token = credentials.get("credentials")
+            scheme = credentials.get("scheme", "").lower()
+
+            # Skip if no bearer token
+            if not token or scheme != "bearer":
+                logger.debug("No bearer token found, continuing auth chain")
+                return {"continue_processing": True}
+
+            try:
+                # Validate JWT with Cognito
+                claims = await self._cognito_validator.validate_token(token)
+                email = claims.user_email
+
+                logger.info(f"JWT validated for user: {email}")
+
+                # Fetch permissions (with cache)
+                async def fetch_permissions():
+                    return await self._tcloud_client.get_user_permissions(
+                        email, bearer_token=token
+                    )
+
+                permissions = await self._permission_cache.get_or_fetch(
+                    email, fetch_permissions
+                )
+
+                # Build authenticated user
+                user = AuthenticatedUser(
+                    email=email,
+                    full_name=claims.name,
+                    cognito_sub=claims.sub,
+                    is_admin=False,
+                    is_active=True,
+                    customers=permissions.customers,
+                    roles=permissions.roles,
+                    permissions=permissions.permissions,
+                )
+
+                logger.info(
+                    f"Authenticated user {email} with {len(permissions.customers)} customers"
+                )
+
+                return {
+                    "modified_payload": user.to_gateway_user(),
+                    "metadata": user.to_metadata(),
+                    "continue_processing": True,
+                }
+
+            except TokenExpiredError as e:
+                logger.warning(f"Token expired: {e}")
+                return {
+                    "error": {
+                        "message": "Token expired",
+                        "code": "TOKEN_EXPIRED",
+                    },
+                    "continue_processing": False,
+                }
+
+            except TokenValidationError as e:
+                logger.warning(f"Token validation failed: {e}")
+                return {
+                    "error": {
+                        "message": str(e),
+                        "code": e.code,
+                    },
+                    "continue_processing": False,
+                }
+
+            except TCloudAPIError as e:
+                logger.error(f"TCloud API error: {e}")
+                # Continue with basic auth if API fails
+                return {"continue_processing": True}
+
+            except Exception as e:
+                logger.error(f"Unexpected auth error: {e}", exc_info=True)
+                return {"continue_processing": True}
+
+        async def agent_pre_invoke(
+            self,
+            payload: dict[str, Any],
+            context: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Inject user context headers before agent invocation.
+
+            This hook is called before each agent request to inject
+            user identity headers that agents can use for authorization.
+
+            Args:
+                payload: Contains request info including headers.
+                context: Context with authenticated user info.
+
+            Returns:
+                Dict with:
+                    - modified_payload: Updated payload with injected headers
+                    - continue_processing: Always True to continue
+            """
+            if not self.settings.enable_header_propagation:
+                return {"continue_processing": True}
+
+            # Get user info from context
+            user_metadata = (context or {}).get("metadata", {})
+            if not user_metadata or user_metadata.get("auth_method") != "cognito":
+                return {"continue_processing": True}
+
+            user_email = (context or {}).get("user", {}).get("email")
+            if not user_email:
+                return {"continue_processing": True}
+
+            # Build headers to inject
+            customers = user_metadata.get("customers", [])
+            headers_to_inject = {
+                "X-User-Email": user_email,
+                "X-User-Customers": json.dumps(customers),
+            }
+
+            # Get existing headers from payload
+            existing_headers = payload.get("headers", {})
+            merged_headers = {**existing_headers, **headers_to_inject}
+
+            # Get request ID if available
+            request_id = (context or {}).get("request_id")
+            if request_id:
+                merged_headers["X-Request-ID"] = request_id
+
+            logger.debug(
+                f"Injecting headers for {user_email}: "
+                f"X-User-Customers={len(customers)} customers"
+            )
+
+            return {
+                "modified_payload": {**payload, "headers": merged_headers},
+                "continue_processing": True,
+            }
+
+        async def tool_pre_invoke(
+            self,
+            payload: dict[str, Any],
+            context: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Inject user context before tool invocation.
+
+            Similar to agent_pre_invoke but for tool calls.
+
+            Args:
+                payload: Tool invocation payload.
+                context: Context with authenticated user info.
+
+            Returns:
+                Dict with modified payload including user context.
+            """
+            # Reuse the same logic as agent_pre_invoke
+            return await self.agent_pre_invoke(payload, context)
+
+
+    # Plugin factory function for Context Forge
+    def create_plugin(config: dict[str, Any] | None = None) -> TCloudCognitoAuthPlugin:
+        """Create a new plugin instance.
+
+        Args:
+            config: Configuration from Context Forge.
+
+        Returns:
+            Configured plugin instance.
+        """
+        return TCloudCognitoAuthPlugin(config)
+kind: ConfigMap
+metadata:
+  name: tcloud-cognito-auth-plugin

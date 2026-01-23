@@ -20,7 +20,7 @@ mcpContextForge:
 
   ingress:
     enabled: true
-    className: "nginx"  # Patched out after deploy to use public ingress
+    # className removed - uses default external ingress (201.157.216.223)
     host: mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh
     path: /
     pathType: Prefix

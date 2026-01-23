@@ -80,6 +80,18 @@ tcloud-mcp-platform/
   - Email: admin@example.com
   - Password: `kubectl -n mcp-dev get secret mcp-stack-gateway-secret -o jsonpath="{.data.BASIC_AUTH_PASSWORD}" | base64 -d`
 
+## Authentication Plugin
+
+| Plugin | Purpose | Status |
+|--------|---------|--------|
+| tcloud_cognito_auth | JWT validation via Cognito + TCloud API permissions | ✅ Implemented |
+
+**Location:** `plugins/tcloud_cognito_auth/`
+
+**Headers Propagated:**
+- `X-User-Email` - User email
+- `X-User-Customers` - JSON array of cloud_ids
+
 ## Registered Agents
 
 | Agent | URL | Status |
