@@ -8,6 +8,17 @@ import json
 import logging
 from typing import Any
 
+# MCP Context Forge imports
+try:
+    from mcpgateway.plugins.framework.base import Plugin
+    from mcpgateway.plugins.framework.models import PluginConfig, PluginContext, PluginResult
+except ImportError:
+    # Fallback for standalone testing
+    Plugin = object
+    PluginConfig = Any
+    PluginContext = Any
+    PluginResult = dict
+
 from .cache import PermissionCache
 from .cognito import CognitoJWTValidator
 from .config import PluginSettings, get_settings
@@ -23,7 +34,7 @@ from .tcloud_api import TCloudAPIClient
 logger = logging.getLogger(__name__)
 
 
-class TCloudCognitoAuthPlugin:
+class TCloudCognitoAuthPlugin(Plugin):
     """TCloud Cognito Authentication Plugin.
 
     Implements http_auth_resolve_user and agent_pre_invoke hooks for
@@ -31,47 +42,47 @@ class TCloudCognitoAuthPlugin:
     permission caching.
     """
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: PluginConfig):
         """Initialize the plugin.
 
         Args:
-            config: Optional configuration dictionary from Context Forge.
+            config: Plugin configuration from Context Forge.
         """
-        self._config = config or {}
-        self._settings: PluginSettings | None = None
+        super().__init__(config)
+        self._plugin_settings: PluginSettings | None = None
         self._cognito_validator: CognitoJWTValidator | None = None
         self._tcloud_client: TCloudAPIClient | None = None
         self._permission_cache: PermissionCache | None = None
-        self._initialized = False
+        self._plugin_initialized = False
 
     @property
-    def settings(self) -> PluginSettings:
+    def plugin_settings(self) -> PluginSettings:
         """Get plugin settings, loading from environment if needed."""
-        if not self._settings:
-            self._settings = get_settings()
-        return self._settings
+        if not self._plugin_settings:
+            self._plugin_settings = get_settings()
+        return self._plugin_settings
 
     async def initialize(self) -> None:
         """Initialize plugin resources.
 
         Called by Context Forge when the plugin is loaded.
         """
-        if self._initialized:
+        if self._plugin_initialized:
             return
 
         logger.info("Initializing TCloud Cognito Auth Plugin")
 
         # Initialize components
-        self._cognito_validator = CognitoJWTValidator(self.settings)
+        self._cognito_validator = CognitoJWTValidator(self.plugin_settings)
         await self._cognito_validator.initialize()
 
-        self._tcloud_client = TCloudAPIClient(self.settings)
+        self._tcloud_client = TCloudAPIClient(self.plugin_settings)
         await self._tcloud_client.initialize()
 
-        self._permission_cache = PermissionCache(self.settings)
+        self._permission_cache = PermissionCache(self.plugin_settings)
         await self._permission_cache.initialize()
 
-        self._initialized = True
+        self._plugin_initialized = True
         logger.info("TCloud Cognito Auth Plugin initialized successfully")
 
     async def shutdown(self) -> None:
@@ -88,7 +99,7 @@ class TCloudCognitoAuthPlugin:
         if self._permission_cache:
             await self._permission_cache.shutdown()
 
-        self._initialized = False
+        self._plugin_initialized = False
 
     async def http_auth_resolve_user(
         self,
@@ -112,7 +123,7 @@ class TCloudCognitoAuthPlugin:
                 - metadata: Additional info including permissions
                 - continue_processing: Whether to continue auth chain
         """
-        if not self._initialized:
+        if not self._plugin_initialized:
             await self.initialize()
 
         # Extract credentials from payload
@@ -212,7 +223,7 @@ class TCloudCognitoAuthPlugin:
                 - modified_payload: Updated payload with injected headers
                 - continue_processing: Always True to continue
         """
-        if not self.settings.enable_header_propagation:
+        if not self.plugin_settings.enable_header_propagation:
             return {"continue_processing": True}
 
         # Get user info from context
