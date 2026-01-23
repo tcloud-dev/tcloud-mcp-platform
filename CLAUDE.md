@@ -50,7 +50,9 @@ Clients → Orchestrator Agent → MCP Context Forge (Gateway) → Specialist Ag
 **Key Components:**
 - **MCP Context Forge**: Central gateway that federates multiple MCP servers (IBM upstream chart)
 - **Specialist Agents**: Domain-specific agents (CPU/RAM, Database, Network, etc.)
-- **Authentication Plugin**: `plugins/tcloud_cognito_auth/` - Cognito JWT validation + TCloud API permissions
+- **Authentication Plugin**: `plugins/tcloud_cognito_auth/` - Cognito JWT validation + TCloud API permissions (✅ Deployed)
+
+**Docker Image (with plugin):** `ghcr.io/tcloud-dev/mcp-context-forge:with-auth`
 
 ## Project Structure
 
@@ -68,6 +70,17 @@ Clients → Orchestrator Agent → MCP Context Forge (Gateway) → Specialist Ag
 |-------------|-----------|-------------|
 | Dev | mcp-dev | https://mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh |
 | Prod | mcp | https://mcp-gateway.tcloud.internal (planned) |
+
+## Important Configuration Notes
+
+**Dev Ingress:**
+- Do NOT set `ingressClassName` in values-dev.yaml (external controller picks up ingresses without class)
+- TLS should be `false` - external ingress handles HTTPS automatically
+
+**Common Issues:**
+- Migration job stuck: `kubectl -n mcp-dev delete job mcp-stack-migration` then deploy with `--no-hooks`
+- Redis 8.4 crash: Remove inline comments from redis configmap (e.g., `save 900 1 # comment` → separate lines)
+- PVC multi-attach: Scale down old replicaset before new pods can attach
 
 ## Code Conventions
 
