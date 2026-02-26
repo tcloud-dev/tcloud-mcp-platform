@@ -20,7 +20,7 @@ mcpContextForge:
 
   ingress:
     enabled: true
-    # className removed - uses default external ingress (201.157.216.223)
+    className: ""  # Empty to use external ingress (201.157.216.223), overrides internal from base values.yaml
     host: mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh
     path: /
     pathType: Prefix
@@ -30,6 +30,14 @@ mcpContextForge:
   config:
     LOG_LEVEL: DEBUG
     GUNICORN_WORKERS: "2"
+
+  # Override DATABASE_URL and REDIS_URL because $(VAR) syntax doesn't work with secretKeyRef
+  # The helm chart uses $(POSTGRES_USER):$(POSTGRES_PASSWORD) but these come from secrets
+  extraEnv:
+    - name: DATABASE_URL
+      value: "postgresql+psycopg://mcpforge:rdnRwSU2L2y3cYBnGhafg@mcp-stack-postgres:5432/mcpforge"
+    - name: REDIS_URL
+      value: "redis://mcp-stack-redis:6379/0"
 
   resources:
     requests:
@@ -47,6 +55,8 @@ postgres:
   credentials:
     database: mcpforge
     user: mcpforge
+    # Password must match DATABASE_URL above and existing PVC data
+    password: rdnRwSU2L2y3cYBnGhafg
 
 redis:
   persistence:
