@@ -84,19 +84,55 @@ tcloud-mcp-platform/
 
 | Plugin | Purpose | Status |
 |--------|---------|--------|
-| tcloud_cognito_auth | JWT validation via Cognito + TCloud API permissions | ✅ Implemented |
+| tcloud_cognito_auth | JWT validation via Cognito + TCloud API permissions | ✅ Deployed |
 
 **Location:** `plugins/tcloud_cognito_auth/`
+
+**Docker Image:** `ghcr.io/tcloud-dev/mcp-context-forge:with-auth`
 
 **Headers Propagated:**
 - `X-User-Email` - User email
 - `X-User-Customers` - JSON array of cloud_ids
+
+**Plugin Hooks:**
+- `http_auth_resolve_user` - Validates JWT and fetches permissions
+- `agent_pre_invoke` - Injects user context headers
 
 ## Registered Agents
 
 | Agent | URL | Status |
 |-------|-----|--------|
 | tcloud-watch-mcp-server | https://api.tcloud-watch-mcp.example.com/mcp | ✅ Registrado |
+
+## Configuration Notes
+
+### Ingress (Dev Environment)
+- **DO NOT** set `ingressClassName` in values-dev.yaml
+- External ingress controller (201.157.216.223) picks up ingresses without className
+- Internal ingress (201.157.216.224) has IP source restrictions
+- TLS should be `false` - external ingress handles HTTPS automatically with wildcard cert
+
+### Redis 8.4 Compatibility
+- Redis 8.4 does not accept inline comments on config lines
+- If redis crashes with "Invalid save parameters", check the configmap:
+  ```bash
+  kubectl -n mcp-dev get cm mcp-stack-redis-config -o yaml
+  ```
+- Fix: Move comments to separate lines (not `save 900 1 # comment`)
+
+### Helm Migration Job
+- If deploy fails with "mcp-stack-migration job InProgress":
+  ```bash
+  kubectl -n mcp-dev delete job mcp-stack-migration
+  helm upgrade ... --no-hooks
+  ```
+
+### Postgres Password
+- Helm generates random passwords on each deploy
+- If postgres fails authentication, patch with original password:
+  ```bash
+  kubectl -n mcp-dev patch secret postgres-secret -p '{"data":{"POSTGRES_PASSWORD":"'$(echo -n 'ORIGINAL_PASSWORD' | base64)'"}}'
+  ```
 
 ## Related Repositories
 
