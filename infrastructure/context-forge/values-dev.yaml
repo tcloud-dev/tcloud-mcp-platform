@@ -20,7 +20,7 @@ mcpContextForge:
 
   ingress:
     enabled: true
-    className: "nginx"  # Patched out after deploy to use public ingress
+    className: ""  # Empty = uses public ingress controller (.223) with Let's Encrypt wildcard cert
     host: mcp-gateway.tbf8b9d.k8s.sp06.te.tks.sh
     path: /
     pathType: Prefix
