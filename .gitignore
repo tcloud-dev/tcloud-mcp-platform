@@ -31,6 +31,9 @@ ENV/
 *.swp
 *.swo
 
+# Serena
+.serena/
+
 # OS
 .DS_Store
 Thumbs.db
